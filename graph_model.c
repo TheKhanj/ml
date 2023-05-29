@@ -17,6 +17,8 @@ typedef enum input_t {
 // float* | node_t*
 typedef void *node_input_t;
 
+const float CACHE_NOT_SET = -1.f;
+
 typedef struct node_t {
 	node_input_t inputs;
 	node_input_type_enum input_type;
@@ -25,6 +27,7 @@ typedef struct node_t {
 	float *weights;
 	float bias;
 	activator_func *activator;
+	float cache;
 } node_t;
 
 void node_init(node_t *node, node_input_type_enum input_type,
@@ -41,6 +44,7 @@ void node_init(node_t *node, node_input_type_enum input_type,
 
 	node->bias = rand_float();
 	node->activator = activator;
+	node->cache = CACHE_NOT_SET;
 }
 
 void node_print(node_t *node) {
@@ -55,6 +59,10 @@ void node_print(node_t *node) {
 }
 
 float node_calculate(node_t *node) {
+	if (node->cache != CACHE_NOT_SET) {
+		return node->cache;
+	}
+
 	float ret = 0;
 	assert(node->inputs != NULL);
 	for (size_t i = 0; i < node->input_size; ++i) {
@@ -72,12 +80,22 @@ float node_calculate(node_t *node) {
 	}
 
 	ret += node->bias;
-	return node->activator(ret);
+	node->cache = node->activator(ret);
+	return node->cache;
 }
 
 float sigmoidf(float x) { return 1.f / (1.f + expf(-x)); }
 
 #define NETWORK_SIZE(net) ((net).partial_sum[(net).layers_size - 1])
+#define NETWORK_NODE_IN_LAYER_AT(net, layer, index)                            \
+	((net).nodes + (net).partial_sum[(layer)] + (index))
+
+typedef struct traning_set_t {
+	size_t size;
+	size_t initials_size;
+	float **initials;
+	float **expected;
+} training_set_t;
 
 typedef struct network_t {
 	node_t *nodes;
@@ -126,7 +144,19 @@ network_t network_init(size_t *layers, size_t layers_size) {
 	return net;
 }
 
-void network_print(network_t *net)  {
+void network_set_initials(network_t *net, float *initials,
+													size_t initials_size) {
+	const size_t net_initials_size = net->layers[0];
+
+	assert(initials_size == net_initials_size);
+	for (size_t i = 0; i < initials_size; ++i) {
+		node_t *node = net->nodes + i;
+		node->inputs = initials;
+		node->input_type = INPUT_TYPE_FLOAT;
+	}
+}
+
+void network_print(network_t *net) {
 	printf("size: %zu\n", NETWORK_SIZE(*net));
 
 	printf("nodes: [\n");
@@ -139,8 +169,58 @@ void network_print(network_t *net)  {
 	printf("]\n");
 }
 
+float network_cost(network_t *net, training_set_t *set) {
+	float ret = 0;
+
+	const size_t initials_size = set->initials_size;
+	const size_t last_layer = net->layers_size - 1;
+	const size_t last_layer_size = net->layers[last_layer];
+
+	for (size_t i = 0; i < set->size; i++) {
+		float *initials = set->initials[i];
+		float *expecteds = set->expected[i];
+
+		network_set_initials(net, initials, initials_size);
+
+		for (size_t j = 0; j < last_layer_size; j++) {
+			node_t *node = NETWORK_NODE_IN_LAYER_AT(*net, last_layer, j);
+			float guess = node_calculate(node);
+			float expected = expecteds[j];
+			float diff = guess - expected;
+			ret += diff * diff;
+		}
+	}
+
+	return ret / (set->size * last_layer_size);
+}
+
 int main(void) {
 	size_t layers[] = {2, 1};
 	network_t net = network_init(layers, sizeof(layers) / sizeof(layers[0]));
-	network_print(&net);
+
+	float model[][3] = {
+			{0.f, 0.f, 0.f},
+			{1.f, 0.f, 1.f},
+			{0.f, 1.f, 1.f},
+			{1.f, 1.f, 1.f},
+	};
+
+	float *initials[] = {model[0], model[1], model[2]};
+
+	float *expected[] = {
+			&model[0][2],
+			&model[1][2],
+			&model[2][2],
+			&model[3][2],
+	};
+
+	training_set_t set = {
+		.initials = initials,
+		.initials_size =2,
+		.expected = expected,
+		.size  = 4
+		
+	};
+	// network_print(&net);
+	printf("%f", network_cost(&net, &set));
 }
